@@ -1,0 +1,184 @@
+#include <HardwareSerial.h>
+#include <WiFi.h>
+#include <TinyGPS++.h>
+#include <BlynkSimpleEsp32.h>
+#include <math.h>
+#include <PS4Controller.h>
+
+HardwareSerial gpsSerial(1);
+#define RXPin 12
+#define TXPin 14
+
+TinyGPSPlus gps;
+
+WidgetMap myMap(V0);
+
+BlynkTimer timer;
+
+float gps_speed;
+float no_of_satellites;
+String satellite_orientation;
+
+float savedLatitude = 0.0;
+float savedLongitude = 0.0;
+float maxDistance = 0.0;
+
+char auth[] = "EUZJVIIKlOjbuIzkVa8LbKHIkEPH9WRq";
+char ssid[] = "Room";
+char pass[] = "@Khaled#";
+
+#define SAVE_LOCATION_BUTTON_PIN V6
+#define MAX_DISTANCE_INPUT_PIN V12
+
+bool isMoving = false;
+
+void setup() {
+  Serial.begin(9600);
+  
+  gpsSerial.begin(9600, SERIAL_8N1, RXPin, TXPin);
+  PS4.begin("04:56:e5:43:e5:ad");
+
+  Blynk.begin(auth, ssid, pass);
+
+  timer.setInterval(5000L, checkGPS);
+}
+
+void loop() {
+  if (gpsSerial.available() > 0) {
+    if (gps.encode(gpsSerial.read()))
+      displayInfo();
+  }
+ 
+  if (savedLatitude != 0.0 && savedLongitude != 0.0) {
+    float currentLatitude = gps.location.lat();
+    float currentLongitude = gps.location.lng();
+    float distance = calculateDistance(savedLatitude, savedLongitude, currentLatitude, currentLongitude);
+    Blynk.virtualWrite(V10, distance);
+
+    if (maxDistance > 0.0) {
+      if (distance > maxDistance) {
+        Blynk.virtualWrite(V11, "Out of range");
+      } else {
+        Blynk.virtualWrite(V11, "Within range");
+      }
+    }
+  }
+
+  if (PS4.isConnected()) {
+    checkDirectionButtons();
+    checkAnalogControls();
+  }
+  
+  Blynk.run();
+  timer.run();
+}
+
+void checkDirectionButtons() {
+  char direction = ';'; // Default command for stopping
+   
+  if (PS4.Right()) {
+    direction = '}';
+  } else if (PS4.Left()) {
+    direction = '{';
+  } else if (PS4.Up()) {
+    direction = '(';
+  } else if (PS4.Down()) {
+    direction = ')';
+  }
+
+  sendCommand(direction);
+}
+
+void checkAnalogControls() {
+  int leftX = PS4.LStickX();
+  int leftY = PS4.LStickY();
+  int threshold = 50;
+  char direction = ';'; // Default command for stopping
+
+  if (abs(leftY) > threshold || abs(leftX) > threshold) {
+    if (abs(leftY) > abs(leftX)) {
+      if (leftY > 0) {
+        direction = '('; // Move forward
+      } else {
+        direction = ')'; // Move backward
+      }
+    } else {
+      if (leftX > 0) {
+        direction = '}'; // Move right
+      } else {
+        direction = '{'; // Move left
+      }
+    }
+  }
+
+  sendCommand(direction);
+}
+
+void sendCommand(char cmd) {
+  Serial.println(cmd);
+}
+
+BLYNK_WRITE(SAVE_LOCATION_BUTTON_PIN) {
+  int buttonState = param.asInt();
+  if (buttonState == HIGH) {
+    savedLatitude = gps.location.lat();
+    savedLongitude = gps.location.lng();
+    Blynk.virtualWrite(V7, String(savedLatitude, 6));
+    Blynk.virtualWrite(V8, String(savedLongitude, 6));
+    Blynk.virtualWrite(V9, "Location saved");
+  }
+}
+
+BLYNK_WRITE(MAX_DISTANCE_INPUT_PIN) {
+  maxDistance = param.asFloat();
+}
+
+void checkGPS() {
+  if (gps.charsProcessed() < 10) {
+    Serial.println(F("No GPS detected: check wiring."));
+    Blynk.virtualWrite(V4, "GPS ERROR");
+  } else {
+    Blynk.virtualWrite(V4, "GPS Done");
+  }
+}
+
+void displayInfo() {
+  float latitude = gps.location.lat();
+  float longitude = gps.location.lng();
+
+  Serial.print("LAT:  ");
+  Serial.println(latitude, 6);
+  Serial.print("LONG: ");
+  Serial.println(longitude, 6);
+
+  Serial.print("Altitude: ");
+  Serial.println(gps.altitude.meters());
+  Serial.print("Speed: ");
+  Serial.println(gps.speed.kmph());
+
+  Blynk.virtualWrite(V1, String(latitude, 6));
+  Blynk.virtualWrite(V2, String(longitude, 6));
+  myMap.location(1, latitude, longitude, "GPS_Location");
+
+  gps_speed = gps.speed.kmph();
+  Blynk.virtualWrite(V3, gps_speed);
+
+  no_of_satellites = gps.satellites.value();
+  Blynk.virtualWrite(V4, no_of_satellites);
+
+  satellite_orientation = TinyGPSPlus::cardinal(gps.course.value());
+  Blynk.virtualWrite(V5, satellite_orientation);
+
+  Serial.println();
+}
+
+float calculateDistance(float lat1, float lon1, float lat2, float lon2) {
+  float radius = 6371000.0;
+  float dlat = radians(lat2 - lat1);
+  float dlon = radians(lon2 - lon1);
+  float a = sin(dlat / 2) * sin(dlat / 2) + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2) * sin(dlon / 2);
+  float c = 2 * atan2(sqrt(a), sqrt(1 - a));
+  float distance = radius * c;
+
+  return distance;
+}
